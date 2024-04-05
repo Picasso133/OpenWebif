@@ -1,7 +1,9 @@
+# -*- coding: utf-8 -*-
+
 ##########################################################################
 # OpenWebif: httpserver
 ##########################################################################
-# Copyright (C) 2011 - 2023 jbleyel and E2OpenPlugins
+# Copyright (C) 2011 - 2020 E2OpenPlugins
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
@@ -18,41 +20,38 @@
 # Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
 ##########################################################################
 
-import ipaddress
-from importlib.util import spec_from_file_location, module_from_spec
-from os import listdir, makedirs, remove, symlink
-from os.path import exists, islink
-from socket import has_ipv6
-import sys
-from OpenSSL import SSL
-from OpenSSL import crypto
+from __future__ import print_function
+import enigma
+from Screens.MessageBox import MessageBox
+from Components.config import config
+from Tools.Directories import fileExists
 from twisted import version
 from twisted.internet import reactor, ssl
 from twisted.web import server, http, resource
 from twisted.internet.error import CannotListenError
 
-from enigma import eEnv
-from Screens.MessageBox import MessageBox
-from Components.config import config
+from Plugins.Extensions.OpenWebif.controllers.root import RootController
+from Plugins.Extensions.OpenWebif.sslcertificate import SSLCertificateGenerator, KEY_FILE, CERT_FILE, CA_FILE, CHAIN_FILE
+from socket import has_ipv6
+from OpenSSL import SSL
+from OpenSSL import crypto
 from Components.Network import iNetwork
 
-from .controllers.root import RootController
-from .controllers.utilities import toString
-from .sslcertificate import SSLCertificateGenerator, KEY_FILE, CERT_FILE, CA_FILE, CHAIN_FILE
-
+import os
+import ipaddress
+import six
+import importlib
 
 global listener, server_to_stop, site, sslsite
 listener = []
-
-INET6 = "/proc/net/if_inet6"
 
 
 def getAllNetworks():
 	tempaddrs = []
 	# Get all IP networks
-	if exists(INET6):
+	if fileExists('/proc/net/if_inet6'):
 		if has_ipv6 and version.major >= 12:
-			proc = INET6
+			proc = '/proc/net/if_inet6'
 			for line in open(proc).readlines():
 				# Skip localhost
 				if line.startswith('00000000000000000000000000000001'):
@@ -61,8 +60,8 @@ def getAllNetworks():
 				tmp = line.split()
 				tmpaddr = str(ipaddress.ip_address(int(tmp[0], 16)))
 				if tmp[2].lower() != "ff":
-					tmpaddr = f"{tmpaddr}/{int(tmp[2].lower(), 16)}"
-					tmpaddr = str(ipaddress.IPv6Network(str(tmpaddr), strict=False))
+					tmpaddr = "%s/%s" % (tmpaddr, int(tmp[2].lower(), 16))
+					tmpaddr = str(ipaddress.IPv6Network(six.text_type(tmpaddr), strict=False))
 
 				tempaddrs.append(tmpaddr)
 	# Crappy legacy IPv4 has no proc entry with clean addresses
@@ -75,7 +74,7 @@ def getAllNetworks():
 		ip = '.'.join(str(x) for x in crap)
 		netmask = str(sum([bin(int(x)).count('1') for x in iNetwork.getAdapterAttribute(iface, "netmask")]))
 		ip = ip + "/" + netmask
-		tmpaddr = str(ipaddress.IPv4Network(str(ip), strict=False))
+		tmpaddr = str(ipaddress.IPv4Network(six.text_type(ip), strict=False))
 		tempaddrs.append(tmpaddr)
 
 	if tempaddrs == []:
@@ -86,16 +85,16 @@ def getAllNetworks():
 
 def verifyCallback(connection, x509, errnum, errdepth, ok):
 	if not ok:
-		print(f'[OpenWebif] Invalid cert from subject: {str(x509.get_subject())}')
+		print('[OpenWebif] Invalid cert from subject: ', x509.get_subject())
 		return False
 	else:
-		print(f'[OpenWebif] Successful cert authed as: {str(x509.get_subject())}')
+		print('[OpenWebif] Successful cert authed as: ', x509.get_subject())
 	return True
 
 
 def isOriginalWebifInstalled():
-	pluginpath = eEnv.resolve('${libdir}/enigma2/python/Plugins/Extensions/WebInterface/plugin.py')
-	if exists(pluginpath) or exists(pluginpath + "c"):
+	pluginpath = enigma.eEnv.resolve('${libdir}/enigma2/python/Plugins/Extensions/WebInterface/plugin.py')
+	if fileExists(pluginpath) or fileExists(pluginpath + "o") or fileExists(pluginpath + "c"):
 		return True
 
 	return False
@@ -106,9 +105,9 @@ def buildRootTree(session):
 
 	if not isOriginalWebifInstalled():
 		# this is an hack! any better idea?
-		origwebifpath = eEnv.resolve('${libdir}/enigma2/python/Plugins/Extensions/WebInterface')
-		hookpath = eEnv.resolve('${libdir}/enigma2/python/Plugins/Extensions/OpenWebif/pluginshook.src')
-		if not islink(origwebifpath + "/WebChilds/Toplevel.py"):
+		origwebifpath = enigma.eEnv.resolve('${libdir}/enigma2/python/Plugins/Extensions/WebInterface')
+		hookpath = enigma.eEnv.resolve('${libdir}/enigma2/python/Plugins/Extensions/OpenWebif/pluginshook.src')
+		if not os.path.islink(origwebifpath + "/WebChilds/Toplevel.py"):
 			print("[OpenWebif] hooking original webif plugins")
 
 			cleanuplist = [
@@ -127,27 +126,27 @@ def buildRootTree(session):
 			]
 
 			for cleanupfile in cleanuplist:
-				if exists(origwebifpath + cleanupfile):
-					remove(origwebifpath + cleanupfile)
+				if fileExists(origwebifpath + cleanupfile):
+					os.remove(origwebifpath + cleanupfile)
 
-			if not exists(origwebifpath + "/WebChilds/External"):
-				makedirs(origwebifpath + "/WebChilds/External")
+			if not os.path.exists(origwebifpath + "/WebChilds/External"):
+				os.makedirs(origwebifpath + "/WebChilds/External")
 			open(origwebifpath + "/__init__.py", "w").close()
 			open(origwebifpath + "/WebChilds/__init__.py", "w").close()
 			open(origwebifpath + "/WebChilds/External/__init__.py", "w").close()
 
-			symlink(hookpath, origwebifpath + "/WebChilds/Toplevel.py")
+			os.symlink(hookpath, origwebifpath + "/WebChilds/Toplevel.py")
 
 		# import modules
 		print("[OpenWebif] loading external plugins...")
 		from Plugins.Extensions.WebInterface.WebChilds.Toplevel import loaded_plugins
 		if len(loaded_plugins) == 0:
-			externals = listdir(origwebifpath + "/WebChilds/External")
+			externals = os.listdir(origwebifpath + "/WebChilds/External")
 			loaded = []
 			for external in externals:
-				if external.endswith(".py"):
+				if external[-3:] == ".py":
 					modulename = external[:-3]
-				elif external.endswith(".pyc"):
+				elif external[-4:] == ".pyo" or external[-4:] == ".pyc":
 					modulename = external[:-4]
 				else:
 					continue
@@ -160,25 +159,15 @@ def buildRootTree(session):
 
 				loaded.append(modulename)
 				try:
-					spec = spec_from_file_location(modulename, origwebifpath + "/WebChilds/External/" + modulename + ".py")
-					module = module_from_spec(spec)
-					sys.modules[modulename] = module
-					spec.loader.exec_module(module)
-				except Exception as err:
-					print(f"[OpenWebif] Error load external module '{modulename}'. {err}")
+					importlib.load_source(modulename, origwebifpath + "/WebChilds/External/" + modulename + ".py")
+				except Exception as e:
 					# maybe there's only the compiled version
-					try:
-						spec = spec_from_file_location(modulename, origwebifpath + "/WebChilds/External/" + external)
-						module = module_from_spec(spec)
-						sys.modules[modulename] = module
-						spec.loader.exec_module(module)
-					except Exception as err:
-						print(f"[OpenWebif] Error load external module '{modulename}'. {err}")
+					importlib.load_compiled(modulename, origwebifpath + "/WebChilds/External/" + external)
 
 		if len(loaded_plugins) > 0:
 			for plugin in loaded_plugins:
 				root.putChild2(plugin[0], plugin[1])
-				print(f"[OpenWebif] plugin '{plugin[2]}' loaded on path '/{plugin[0]}'")
+				print("[OpenWebif] plugin '%s' loaded on path '/%s'" % (plugin[2], plugin[0]))
 		else:
 			print("[OpenWebif] no plugins to load")
 	return root
@@ -194,7 +183,7 @@ def HttpdStart(session):
 	if config.OpenWebif.enabled.value is True:
 		global listener, site, sslsite
 		port = config.OpenWebif.port.value
-		if listener is not None and len(listener) > 0:
+		if listener != None and len(listener) > 0:
 			print("[OpenWebif] httpserver already started")
 			return
 
@@ -205,18 +194,18 @@ def HttpdStart(session):
 
 		# start http webserver on configured port
 		try:
-			if has_ipv6 and exists(INET6) and version.major >= 12:
+			if has_ipv6 and fileExists('/proc/net/if_inet6') and version.major >= 12:
 				# use ipv6
 				listener.append(reactor.listenTCP(port, site, interface='::'))
 			else:
 				# ipv4 only
 				listener.append(reactor.listenTCP(port, site))
-			print(f"[OpenWebif] started on {port}")
+			print("[OpenWebif] started on %i" % (port))
 			BJregisterService('http', port)
 		except CannotListenError:
-			print(f"[OpenWebif] failed to listen on Port {port}")
+			print("[OpenWebif] failed to listen on Port %i" % (port))
 
-		if config.OpenWebif.https_clientcert.value is True and not exists(CA_FILE):
+		if config.OpenWebif.https_clientcert.value is True and not os.path.exists(CA_FILE):
 			# Disable https
 			config.OpenWebif.https_enabled.value = False
 			config.OpenWebif.https_enabled.save()
@@ -224,27 +213,27 @@ def HttpdStart(session):
 			session.open(MessageBox, "Cannot read CA certs for HTTPS access\nHTTPS access is disabled!", MessageBox.TYPE_ERROR)
 
 		if config.OpenWebif.https_enabled.value is True:
-			httpsport = config.OpenWebif.https_port.value
+			httpsPort = config.OpenWebif.https_port.value
 			installCertificates(session)
 			# start https webserver on port configured port
 			try:
 				try:
-					key = crypto.load_privatekey(crypto.FILETYPE_PEM, open(KEY_FILE).read())
-					cert = crypto.load_certificate(crypto.FILETYPE_PEM, open(CERT_FILE).read())
-					print(f"[OpenWebif] CHAIN_FILE = {CHAIN_FILE}")
+					key = crypto.load_privatekey(crypto.FILETYPE_PEM, open(KEY_FILE, 'rt').read())
+					cert = crypto.load_certificate(crypto.FILETYPE_PEM, open(CERT_FILE, 'rt').read())
+					print("[OpenWebif] CHAIN_FILE = %s" % CHAIN_FILE)
 					chain = None
-					if exists(CHAIN_FILE):
-						chain = [crypto.load_certificate(crypto.FILETYPE_PEM, open(CHAIN_FILE).read())]
+					if os.path.exists(CHAIN_FILE):
+						chain = [crypto.load_certificate(crypto.FILETYPE_PEM, open(CHAIN_FILE, 'rt').read())]
 						print("[OpenWebif] ssl chain file found - loading")
 					context = ssl.CertificateOptions(privateKey=key, certificate=cert, extraCertChain=chain)
 				except:  # nosec # noqa: E722
 					# THIS EXCEPTION IS ONLY CATCHED WHEN CERT FILES ARE BAD (look below for error)
 					print("[OpenWebif] failed to get valid cert files. (It could occure bad file save or format, removing...)")
 					# removing bad files
-					if exists(KEY_FILE):
-						remove(KEY_FILE)
-					if exists(CERT_FILE):
-						remove(CERT_FILE)
+					if os.path.exists(KEY_FILE):
+						os.remove(KEY_FILE)
+					if os.path.exists(CERT_FILE):
+						os.remove(CERT_FILE)
 					# regenerate new ones
 					installCertificates(session)
 					context = ssl.DefaultOpenSSLContextFactory(KEY_FILE, CERT_FILE)
@@ -260,16 +249,16 @@ def HttpdStart(session):
 				sslroot = AuthResource(session, temproot)
 				sslsite = server.Site(sslroot)
 
-				if has_ipv6 and exists(INET6) and version.major >= 12:
+				if has_ipv6 and fileExists('/proc/net/if_inet6') and version.major >= 12:
 					# use ipv6
-					listener.append(reactor.listenSSL(httpsport, sslsite, context, interface='::'))
+					listener.append(reactor.listenSSL(httpsPort, sslsite, context, interface='::'))
 				else:
 					# ipv4 only
-					listener.append(reactor.listenSSL(httpsport, sslsite, context))
-				print(f"[OpenWebif] started on port:{httpsport}")
-				BJregisterService('https', httpsport)
+					listener.append(reactor.listenSSL(httpsPort, sslsite, context))
+				print("[OpenWebif] started on", httpsPort)
+				BJregisterService('https', httpsPort)
 			except CannotListenError:
-				print(f"[OpenWebif] failed to listen on Port: {httpsport}")
+				print("[OpenWebif] failed to listen on Port", httpsPort)
 			except:  # nosec # noqa: E722
 				print("[OpenWebif] failed to start https, disabling...")
 				# Disable https
@@ -279,7 +268,7 @@ def HttpdStart(session):
 		# Streaming requires listening on 127.0.0.1:80
 		if port != 80:
 			try:
-				if has_ipv6 and exists(INET6) and version.major >= 12:
+				if has_ipv6 and fileExists('/proc/net/if_inet6') and version.major >= 12:
 					# use ipv6
 					# Dear Twisted devs: Learning English, lesson 1 - interface != address
 					listener.append(reactor.listenTCP(80, site, interface='::1'))
@@ -306,7 +295,7 @@ class AuthResource(resource.Resource):
 		self.resource = root
 
 	def noShell(self, user):
-		if exists('/etc/passwd'):
+		if fileExists('/etc/passwd'):
 			for line in open('/etc/passwd').readlines():
 				line = line.strip()
 				if line.startswith(user + ":") and (line.endswith(":/bin/false") or line.endswith(":/sbin/nologin")):
@@ -315,7 +304,7 @@ class AuthResource(resource.Resource):
 
 	def render(self, request):
 		host = request.getHost().host
-		peer = request.getClientAddress().host
+		peer = request.getClientIP()
 		if peer is None:
 			peer = request.transport.socket.getpeername()[0]
 
@@ -326,7 +315,7 @@ class AuthResource(resource.Resource):
 			peer = peer.split("%")[0]
 
 		if self.login(request.getUser(), request.getPassword(), peer) is False:
-			request.setHeader('WWW-authenticate', f'Basic realm="OpenWebif"')
+			request.setHeader('WWW-authenticate', 'Basic realm="%s"' % ("OpenWebif"))
 			errpage = resource.ErrorPage(http.UNAUTHORIZED, "Unauthorized", "401 Authentication required")
 			return errpage.render(request)
 		else:
@@ -336,15 +325,15 @@ class AuthResource(resource.Resource):
 		global site, sslsite
 		session = request.getSession().sessionNamespaces
 		host = request.getHost().host
-		peer = request.getClientAddress().host
-		host = toString(host)
+		peer = request.getClientIP()
+		host = six.ensure_str(host)
 		if request.getHeader("x-forwarded-for"):
 			peer = request.getHeader("x-forwarded-for")
 
 		if peer is None:
 			peer = request.transport.socket.getpeername()[0]
 
-		peer = toString(peer)
+		peer = six.ensure_str(peer)
 		if peer.startswith("::ffff:"):
 			peer = peer.replace("::ffff:", "")
 
@@ -358,12 +347,12 @@ class AuthResource(resource.Resource):
 			networks = getAllNetworks()
 			if networks:
 				for network in networks:
-					if ipaddress.ip_address(str(peer)) in ipaddress.ip_network(str(network), strict=False):
+					if ipaddress.ip_address(six.text_type(peer)) in ipaddress.ip_network(six.text_type(network), strict=False):
 						return self.resource.getChildWithDefault(path, request)
 
 		# #2: Auth is disabled and access is from private address space (Usually VPN) and access for VPNs has been granted
 		if (not request.isSecure() and config.OpenWebif.auth.value is False) or (request.isSecure() and config.OpenWebif.https_auth.value is False):
-			if config.OpenWebif.vpn_access.value is True and ipaddress.ip_address(str(peer)).is_private:
+			if config.OpenWebif.vpn_access.value is True and ipaddress.ip_address(six.text_type(peer)).is_private:
 				return self.resource.getChildWithDefault(path, request)
 
 		# #3: Access is from localhost and streaming auth is disabled - or - we only want to see our IPv6 (For inadyn-mt)
@@ -371,8 +360,8 @@ class AuthResource(resource.Resource):
 			return self.resource.getChildWithDefault(path, request)
 
 		# #4: Web TV is accessing streams and "auths" by parent session id
-		ruser = toString(request.getUser())
-		rpw = toString(request.getPassword())
+		ruser = six.ensure_str(request.getUser())
+		rpw = six.ensure_str(request.getPassword())
 		if ruser == "-sid":
 			sid = str(rpw)
 			try:
@@ -403,7 +392,7 @@ class AuthResource(resource.Resource):
 			return self.resource.getChildWithDefault(path, request)
 
 		if self.login(ruser, rpw, peer) is False:
-			request.setHeader('WWW-authenticate', f'Basic realm="OpenWebif"')
+			request.setHeader('WWW-authenticate', 'Basic realm="%s"' % ("OpenWebif"))
 			return resource.ErrorPage(http.UNAUTHORIZED, "Unauthorized", "401 Authentication required")
 		else:
 			session["logged"] = True
@@ -420,9 +409,9 @@ class AuthResource(resource.Resource):
 			networks = getAllNetworks()
 			if networks:
 				for network in networks:
-					if ipaddress.ip_address(str(peer)) in ipaddress.ip_network(str(network), strict=False):
+					if ipaddress.ip_address(six.text_type(peer)) in ipaddress.ip_network(six.text_type(network), strict=False):
 						samenet = True
-			if not (ipaddress.ip_address(str(peer)).is_private or samenet):
+			if not (ipaddress.ip_address(six.text_type(peer)).is_private or samenet):
 				return False
 		from crypt import crypt
 		from pwd import getpwnam
@@ -457,7 +446,7 @@ class StopServer:
 		global listener
 		self.server_to_stop = 0
 		for interface in listener:
-			print(f"[OpenWebif] Stopping server on port:{str(interface.port)}")
+			print("[OpenWebif] Stopping server on port", interface.port)
 			deferred = interface.stopListening()
 			try:
 				self.server_to_stop += 1
@@ -483,10 +472,10 @@ class StopServer:
 
 
 def installCertificates(session):
-	certgenerator = SSLCertificateGenerator()
+	certGenerator = SSLCertificateGenerator()
 	try:
-		certgenerator.installCertificates()
-	except OSError as e:
+		certGenerator.installCertificates()
+	except IOError as e:
 		# Disable https
 		config.OpenWebif.https_enabled.value = False
 		config.OpenWebif.https_enabled.save()
@@ -503,7 +492,7 @@ def BJregisterService(protocol, port):
 	except:  # nosec # noqa: E722
 		pass
 	try:
-		from enigma import e2avahi_announce
-		e2avahi_announce(None, f"_{protocol}._tcp", port)
+		servicetype = '_' + protocol + '._tcp'
+		enigma.e2avahi_announce(None, servicetype, port)
 	except:  # nosec # noqa: E722
 		pass
